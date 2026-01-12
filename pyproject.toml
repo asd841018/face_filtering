@@ -1,0 +1,19 @@
+[project]
+name = "face-filter"
+version = "0.1.0"
+description = "for face filtering"
+authors = [
+    {name = "Jerry Chien",email = "asd841018@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mediapipe (>=0.10.31,<0.11.0)",
+    "opencv-python (>=4.12.0.88,<5.0.0.0)",
+    "matplotlib (>=3.10.8,<4.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
