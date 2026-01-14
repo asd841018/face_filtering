@@ -12,7 +12,8 @@ dependencies = [
     "opencv-python (>=4.12.0.88,<5.0.0.0)",
     "matplotlib (>=3.10.8,<4.0.0)",
     "scipy (>=1.17.0,<2.0.0)",
-    "insightface (>=0.7.3,<0.8.0)"
+    "insightface (>=0.7.3,<0.8.0)",
+    "onnxruntime-gpu (>=1.23.2,<2.0.0)"
 ]
 
 
