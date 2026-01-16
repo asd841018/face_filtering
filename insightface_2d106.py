@@ -221,9 +221,105 @@ def warp_face_rbf(img: np.ndarray,
     
     return warped
 
+def warp_face_rbf_cropped(img: np.ndarray, 
+                          src_points: np.ndarray, 
+                          dst_points: np.ndarray,
+                          bbox: np.ndarray,
+                          grid_resolution: int = 50,
+                          padding: float = 0.2):
+    """
+    只處理 bounding box 內的 RBF 變形
+    
+    Args:
+        img: Input image
+        src_points: Original control points (絕對座標)
+        dst_points: Target control points (絕對座標)
+        bbox: Bounding box [x1, y1, x2, y2]
+        grid_resolution: Grid resolution
+        padding: Bounding box 外擴比例
+    
+    Returns:
+        warped: Warped image
+    """
+    h, w = img.shape[:2]
+    
+    # 計算帶 padding 的 bounding box
+    x1, y1, x2, y2 = bbox[:4].astype(int)
+    box_w, box_h = x2 - x1, y2 - y1
+    pad_x, pad_y = int(box_w * padding), int(box_h * padding)
+    
+    # 擴展並限制在圖片範圍內
+    crop_x1 = max(0, x1 - pad_x)
+    crop_y1 = max(0, y1 - pad_y)
+    crop_x2 = min(w, x2 + pad_x)
+    crop_y2 = min(h, y2 + pad_y)
+    
+    crop_w = crop_x2 - crop_x1
+    crop_h = crop_y2 - crop_y1
+    
+    # 將控制點轉換為裁剪區域的局部座標
+    src_local = src_points.copy()
+    dst_local = dst_points.copy()
+    src_local[:, 0] -= crop_x1
+    src_local[:, 1] -= crop_y1
+    dst_local[:, 0] -= crop_x1
+    dst_local[:, 1] -= crop_y1
+    
+    # 只在裁剪區域邊界加固定點
+    margin = max(10, min(crop_w, crop_h) // 8)
+    border_points = []
+    
+    # 四角
+    border_points.extend([[0, 0], [crop_w-1, 0], [crop_w-1, crop_h-1], [0, crop_h-1]])
+    
+    # 邊界點
+    for x in range(margin, crop_w-margin, margin): 
+        border_points.extend([[x, 0], [x, crop_h-1]])
+    for y in range(margin, crop_h-margin, margin):
+        border_points.extend([[0, y], [crop_w-1, y]])
+    
+    border_points = np.array(border_points, dtype=np.float32)
+    
+    all_src = np.vstack([src_local, border_points])
+    all_dst = np.vstack([dst_local, border_points])
+    
+    # 建立 RBF
+    try:
+        rbf_x = Rbf(all_dst[:, 0], all_dst[:, 1], all_src[:, 0], function='thin_plate', smooth=0)
+        rbf_y = Rbf(all_dst[:, 0], all_dst[:, 1], all_src[:, 1], function='thin_plate', smooth=0)
+    except Exception:
+        return img
+    
+    # 計算小網格（相對於裁剪區域更小）
+    grid_w = max(1, crop_w // grid_resolution)
+    grid_h = max(1, crop_h // grid_resolution)
+    
+    grid_x_small = np.linspace(0, crop_w-1, grid_w)
+    grid_y_small = np.linspace(0, crop_h-1, grid_h)
+    grid_x_small, grid_y_small = np.meshgrid(grid_x_small, grid_y_small)
+    
+    map_x_small = rbf_x(grid_x_small, grid_y_small).astype(np.float32)
+    map_y_small = rbf_y(grid_x_small, grid_y_small).astype(np.float32)
+    
+    map_x = cv2.resize(map_x_small, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+    map_y = cv2.resize(map_y_small, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+    
+    # 只對裁剪區域做 remap
+    crop_img = img[crop_y1:crop_y2, crop_x1:crop_x2]
+    warped_crop = cv2.remap(crop_img, map_x, map_y, 
+                            interpolation=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_REFLECT)
+    
+    # 貼回原圖
+    result = img.copy()
+    result[crop_y1:crop_y2, crop_x1:crop_x2] = warped_crop
+    
+    return result
+
 
 def reshape_face(img: np.ndarray,
                  landmarks: np.ndarray,
+                 bbox: np.ndarray = None,
                  cheek_strength: float = 0.15,
                  chin_strength: float = 0.10,
                  grid_resolution: int = 50) -> np.ndarray:
@@ -254,9 +350,15 @@ def reshape_face(img: np.ndarray,
         src_points, indices, left_cheek, right_cheek, chin,
         landmarks, cheek_strength, chin_strength
     )
-    
+    print(f"--------------------bbox: {bbox}----------------------")
     # 3. Apply RBF deformation
-    reshaped = warp_face_rbf(img, src_points, dst_points, grid_resolution)
+    if bbox is not None:
+        reshaped = warp_face_rbf_cropped(
+            img, src_points, dst_points, bbox,
+            grid_resolution, padding=0.2
+        )
+    else:
+        reshaped = warp_face_rbf(img, src_points, dst_points, grid_resolution)
     
     return reshaped
 
@@ -283,11 +385,18 @@ def reshape_faces(img: np.ndarray,
     
     for face in faces:
         landmarks = face.get("landmark_2d_106")
+        bbox = face.get("bbox")
         if landmarks is not None and len(landmarks) == 106:
             result = reshape_face(
-                result, landmarks,
-                cheek_strength, chin_strength, grid_resolution
+                img=result,
+                landmarks=landmarks,
+                bbox=None,
+                cheek_strength=cheek_strength, chin_strength=chin_strength, grid_resolution=grid_resolution
             )
+            # result = reshape_face(
+                # result, landmarks, bbox,
+                # cheek_strength, chin_strength, grid_resolution
+            # )
     
     return result
 
@@ -309,9 +418,14 @@ if __name__ == "__main__":
     # Open video
     cap = cv2.VideoCapture(0)
     
+    # 3. 設定寬度 (例如 640 像素)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    # 4. 設定高度 (例如 480 像素)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    
     # Parameter settings
-    cheek_strength = 0.15  # Cheek contraction strength
-    chin_strength = 0.10   # Chin contraction strength
+    cheek_strength = 0.10  # Cheek contraction strength
+    chin_strength = 0.50   # Chin contraction strength
     grid_resolution = 50   # Grid resolution
     
     print("\n=== Face Reshape with InsightFace 106 Landmarks ===")
@@ -324,16 +438,16 @@ if __name__ == "__main__":
     print("  '[/]' - Adjust chin strength")
     print("  'd' - Toggle dual view")
     
-    show_dual_view = True
+    show_dual_view = False
     
     while True:
-        ret, frame = cap.read()
+        ret, frame_small = cap.read()
         if not ret:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Loop playback
             continue
         
         # Downscale for faster processing
-        frame_small = cv2.resize(frame, (640, 360))
+        # frame_small = cv2.resize(frame, (640, 360))
         
         s = time.time()
         
